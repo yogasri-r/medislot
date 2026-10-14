@@ -12,6 +12,7 @@ from app.models.doctor import Doctor
 from app.models.user import User
 from app.core.dependencies import log_audit
 from app.services.waitlist import process_freed_slot_waitlist
+from app.services.reminder import schedule_appointment_reminders, send_reschedule_alert, send_cancellation_alert
 
 _booking_lock = threading.Lock()
 
@@ -100,6 +101,9 @@ def book_appointment_tx(
         details={"appointment_number": appointment.appointment_number, "slot_id": slot_id}
     )
 
+    # Schedule reminders and dispatch confirmation
+    schedule_appointment_reminders(appointment, db)
+
     return appointment
 
 def reschedule_appointment(
@@ -164,6 +168,10 @@ def reschedule_appointment(
         details={"old_slot_id": old_slot.id if old_slot else None, "new_slot_id": new_slot_id}
     )
 
+    # Dispatch reschedule notification and adjust reminder schedule
+    if old_slot and new_slot:
+        send_reschedule_alert(appt, old_slot, new_slot, db)
+
     return appt
 
 def cancel_appointment(
@@ -213,6 +221,9 @@ def cancel_appointment(
         hospital_id=appt.hospital_id,
         details={"reason": reason}
     )
+
+    # Dispatch cancellation notification and cancel pending reminders
+    send_cancellation_alert(appt, reason, db)
 
     return appt
 

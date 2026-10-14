@@ -65,6 +65,27 @@ def get_current_user(
         )
     return user
 
+def get_optional_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
+    db: Session = Depends(get_db)
+) -> Optional[User]:
+    """Extracts the user from Bearer JWT if present; returns None if anonymous or invalid."""
+    if not credentials:
+        return None
+    try:
+        payload = decode_token(credentials.credentials)
+        if payload.get("type") != "access":
+            return None
+        user_id = payload.get("sub")
+        if not user_id:
+            return None
+        user = db.query(User).filter(User.id == user_id).first()
+        if user and user.is_active:
+            return user
+        return None
+    except Exception:
+        return None
+
 def require_roles(allowed_roles: List[str]) -> Callable:
     """Factory for dependency requiring specific user roles."""
     def role_checker(current_user: User = Depends(get_current_user)) -> User:

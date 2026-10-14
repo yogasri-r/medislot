@@ -35,6 +35,16 @@ class Settings(BaseSettings):
         "http://localhost:8000",
     ]
 
+    # Email & Notifications
+    EMAIL_PROVIDER: str = os.getenv("EMAIL_PROVIDER", "console")  # 'console', 'mock', 'smtp'
+    SMTP_HOST: str = os.getenv("SMTP_HOST", "")
+    SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_USER: str = os.getenv("SMTP_USER", "")
+    SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+    SMTP_FROM_EMAIL: str = os.getenv("SMTP_FROM_EMAIL", "noreply@medislot.com")
+    BASE_URL: str = os.getenv("BASE_URL", "http://localhost:8000")
+    ENABLE_SCHEDULER: bool = os.getenv("ENABLE_SCHEDULER", "true").lower() == "true"
+
     model_config = ConfigDict(env_file=".env", extra="allow")
 
 settings = Settings()

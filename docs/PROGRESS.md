@@ -14,55 +14,64 @@
 | **Phase 0** | Architecture, Implementation Plan, Database Schema | **COMPLETED** | 2026-10-14 |
 | **Phase 1** | Auth, Hospital-Scoped RBAC, Doctors, Seed Data | **COMPLETED** | 2026-10-14 |
 | **Phase 2** | Availability, Booking, Concurrency Prevention, Waitlist | **COMPLETED** | 2026-10-14 |
-| **Infra** | Docker Desktop (PostgreSQL 16 + Redis 7), Alembic Migrations, PostgreSQL Validation | **COMPLETED** (Awaiting Phase 3 Approval) | 2026-10-14 |
-| **Phase 3** | Automated Reminders & Notifications | Pending Approval | - |
-| **Phase 4** | Simulator, Queue Estimation, Slot & Doctor Recommendation | Pending | - |
-| **Phase 5** | ML Models (No-Show, Wait Time) & Evaluation Pipeline | Pending | - |
+| **Infra** | Docker Desktop (PostgreSQL 16 + Redis 7), Alembic Migrations, PostgreSQL Validation | **COMPLETED** | 2026-10-14 |
+| **Phase 3** | Automated Reminders & Notifications | **COMPLETED** | 2026-10-14 |
+| **Phase 4** | Simulator, Queue Estimation, Slot & Doctor Recommendation | **COMPLETED** (Awaiting Phase 5 Approval) | 2026-10-14 |
+| **Phase 5** | ML Models (No-Show, Wait Time) & Evaluation Pipeline | Pending Approval | - |
 | **Phase 6** | AI Features (Gemini API, Red-Flag Triage, NL Search, Agent) | Pending | - |
 | **Phase 7** | Dashboards, Polish, Tests, README & Evaluation Report | Pending | - |
 
 ---
 
-## Deliverables Completed: Infrastructure & PostgreSQL Validation
+## Phase 4: Deliverables Completed
 
-1. **Docker Compose Orchestration (`docker-compose.yml`):**
-   - Configured `postgres:16-alpine` container (`medislot-postgres`) with healthchecks (`pg_isready`), volume persistence (`postgres_data`), and port mapping (`5432:5432`).
-   - Configured `redis:7-alpine` container (`medislot-redis`) with healthcheck (`redis-cli ping`), volume persistence (`redis_data`), and port mapping (`6379:6379`).
-   - Started and verified running healthy via Docker Desktop.
+1. **Synthetic Historical Outpatient Simulator (`scripts/simulate_history.py`):**
+   - Generated **13,853 slots and historical appointments** over the past 180 days across 40 doctors and 500 patients.
+   - Modeled realistic clinical consultation durations using a log-normal distribution ($\mu = 2.89, \sigma = 0.35$, median 18.0 mins, range 8 to 45 mins).
+   - Produced realistic outpatient statuses: **70.2% completed**, **17.8% no-shows**, **12.0% cancellations**.
+   - Created **3,328 verified patient ratings** (1 to 5 stars) with realistic clinical reviews, dynamically updating doctor aggregated averages and review counts in PostgreSQL.
 
-2. **Alembic Database Migrations (`backend/alembic/`):**
-   - Initialized Alembic migration environment linked directly to `app.models.Base.metadata` and environment configuration.
-   - Generated initial migration `4cf4ff85f0ed_initial_schema_for_medislot.py` containing all 14 relational tables, foreign key cascades, and compound indexes.
-   - Successfully executed `alembic upgrade head` against PostgreSQL.
+2. **Multi-Factor Doctor Recommendation Engine (`backend/app/services/recommendation.py`):**
+   - Implemented composite scoring ($0.0 \le \text{Score} \le 1.0$) with configurable weights:
+     - **Specialty match** ($w = 0.30$): Exact vs. partial clinical specialty alignment.
+     - **Earliest available slot** ($w = 0.25$): Evaluated across a 14-day lookahead horizon ($<24\text{h} \rightarrow 1.0, <48\text{h} \rightarrow 0.85, <96\text{h} \rightarrow 0.70$).
+     - **Bayesian rating shrinkage** ($w = 0.20$): Shrinks low-sample doctor ratings toward prior mean ($\mu = 4.0, m = 5$), preventing 1-review 5-star doctors from outranking seasoned 4.8-star doctors with hundreds of reviews.
+     - **Geographic proximity** ($w = 0.15$): Proximity matrix calibrated across Western Tamil Nadu healthcare clusters (Coimbatore, Erode, Tiruppur, Dharapuram).
+     - **Clinical experience** ($w = 0.10$): Scaled linearly up to 25 years.
+     - **Language match bonus** ($+0.05$): Extra bonus when the doctor speaks the patient's preferred language (e.g., Tamil, English).
+   - Generated human-readable explanations summarizing key recommendation drivers (e.g., *"Next slot: Tomorrow 10:20 AM • 4.8★ (92 reviews) • 14 yrs exp • Tamil, English"*).
 
-3. **Deterministic Seeding on PostgreSQL (`scripts/seed_data.py`):**
-   - Deterministic seed script executed against live PostgreSQL:
-     - 1 Super Admin (`admin@medislot.com`).
-     - 4 Western Tamil Nadu Hospitals (Coimbatore, Erode, Tiruppur, Dharapuram) with 4 scoped Hospital Admin accounts.
-     - 10 clinical specialties & departments.
-     - 40 verified doctors with weekly schedule templates (Mon-Fri 09:00 - 13:00).
-     - 500 patients with localized demographics and preferences.
+3. **Smart Slot Ranking & Top 3 Suggestions (`backend/app/services/smart_slots.py`):**
+   - Automatically ranks all available slots for a doctor on a target date.
+   - Highlights the **Top 3 Suggested Slots** with clinical and schedule rationales:
+     - **Patient preference learning:** Gaussian penalty based on patient's historical consultation times.
+     - **Adjacent schedule gap-filling:** Rewards slots adjacent to existing bookings to pack doctor consultation blocks and eliminate fragmented downtime.
+     - **Accumulated delay mitigation:** Accounts for morning vs. late-afternoon delay creep.
+     - **Prime morning slot boost:** Prioritizes optimal morning consultation windows (10:00 AM – 11:30 AM).
 
-4. **PostgreSQL Compatibility Refinements:**
-   - Installed `psycopg` (psycopg 3 binary) and `psycopg2-binary` along with `redis` client.
-   - Refined `Doctor.languages_spoken`, `AuditLog.details`, and `AIInteractionLog` JSON fields to use `JSON().with_variant(JSONB, "postgresql")` adhering to `docs/DATABASE_SCHEMA.md`. This resolved PostgreSQL's `SELECT DISTINCT` equality operator limitation (`could not identify an equality operator for type json`) when querying doctors with joined eager loading.
+4. **Dynamic Queue & Wait Time Estimator (`backend/app/services/queue.py`):**
+   - Calculates real-time queue position and number of patients ahead for any active appointment.
+   - Incorporates each doctor's historical consultation duration average from completed appointments.
+   - Dynamically adds active consultation delay offsets and overdue slot delays.
+   - Formats human-readable wait time intervals (e.g., *"Next in line (0–5 mins)"*, *"24–36 mins"*, *"In consultation right now"*).
+   - Generates hospital-scoped clinical daily queue views for doctors and hospital administrators.
 
-5. **Pytest Verification Suite on Real PostgreSQL (`backend/tests/`):**
-   - Ran complete test suite against PostgreSQL:
-     - `test_password_hashing_argon2`: PASSED
-     - `test_patient_registration_and_login`: PASSED
-     - `test_cannot_register_super_admin_publicly`: PASSED
-     - `test_refresh_token_flow`: PASSED
-     - `test_hospital_scoped_rbac_isolation`: PASSED
-     - `test_patient_forbidden_from_admin_actions`: PASSED
-     - `test_super_admin_global_access`: PASSED
-     - `test_doctor_search_filters`: PASSED
-     - `test_slot_listing_and_auto_generation`: PASSED
-     - `test_booking_concurrency_race_condition_prevention` (20 concurrent threads against PostgreSQL): PASSED (1 succeeded with 201 Created, 19 gracefully failed with 409 Conflict, exactly 1 appointment booked in PostgreSQL)
-     - `test_appointment_lifecycle_state_machine`: PASSED
-     - `test_reschedule_flow`: PASSED
-     - `test_waitlist_auto_offer_on_cancellation`: PASSED
-   - **Total:** 13 passed in 6.36s.
+5. **API Endpoints Implemented:**
+   - `GET /api/v1/recommendations/doctors`: Filter by specialty, city, hospital, language, gender, max fee, and verification status.
+   - `GET /api/v1/recommendations/smart-slots`: Ranks slots for doctor/date, auto-populating patient preference if authenticated.
+   - `GET /api/v1/queue/appointment/{appointment_id}`: Live queue position and wait time estimate (patient/doctor/admin-scoped).
+   - `GET /api/v1/queue/doctor/{doctor_id}`: Clinical outpatient daily queue for attending doctor and hospital staff.
+
+6. **Pytest Verification Suite (`backend/tests/test_recommendations_and_queue.py`):**
+   - Added 7 comprehensive tests covering:
+     - Multi-factor scoring breakdown, bounding ($0.0 - 1.0$), and descending sort.
+     - Geographic proximity matrix calibration across Western Tamil Nadu clusters.
+     - Filter constraints (gender, consultation fee ceiling).
+     - Smart slot ranking and Top 3 suggestion tagging.
+     - Live queue estimation accuracy.
+     - Cross-tenant RBAC and patient data privacy (patient B cannot view patient A's queue).
+     - Clinic staff access control (hospital admin of Kovai cannot view Erode hospital queues).
+   - **Full Test Suite Status:** All **27 passed** in **9.18s** against PostgreSQL.
 
 ---
 
@@ -93,6 +102,9 @@ D:\medislot\
 │   │   │       ├── doctors.py
 │   │   │       ├── hospitals.py
 │   │   │       ├── patients.py
+│   │   │       ├── queue.py
+│   │   │       ├── recommendations.py
+│   │   │       ├── reminders.py
 │   │   │       ├── slots.py
 │   │   │       └── waitlist.py
 │   │   ├── core\
@@ -100,6 +112,7 @@ D:\medislot\
 │   │   │       ├── config.py
 │   │   │       ├── database.py
 │   │   │       ├── dependencies.py
+│   │   │       ├── scheduler.py
 │   │   │       └── security.py
 │   │   ├── models\
 │   │   │       ├── __init__.py
@@ -117,29 +130,40 @@ D:\medislot\
 │   │   │       ├── doctor.py
 │   │   │       ├── hospital.py
 │   │   │       ├── patient.py
+│   │   │       ├── queue.py
+│   │   │       ├── recommendation.py
+│   │   │       ├── reminder.py
 │   │   │       └── schedule.py
 │   │   └── services\
 │   │           ├── availability.py
 │   │           ├── booking.py
+│   │           ├── email.py
+│   │           ├── queue.py
+│   │           ├── recommendation.py
+│   │           ├── reminder.py
+│   │           ├── smart_slots.py
 │   │           └── waitlist.py
 │   └── tests\
 │       ├── test_auth_and_rbac.py
-│       └── test_booking_concurrency_and_lifecycle.py
+│       ├── test_booking_concurrency_and_lifecycle.py
+│       ├── test_recommendations_and_queue.py
+│       └── test_reminders_and_notifications.py
 ├── docs\
 │   ├── DATABASE_SCHEMA.md
 │   ├── IMPLEMENTATION_PLAN.md
 │   └── PROGRESS.md
 └── scripts\
-    └── seed_data.py
+    ├── seed_data.py
+    └── simulate_history.py
 ```
 
 ---
 
 ## Next Steps
 
-- **Await User Approval** to commence **Phase 3: Automated Reminders and Notifications**:
-  - APScheduler job engine configuration.
-  - 24-hour and 2-hour advance appointment reminders.
-  - One-click confirm/cancel signed tokens (HMAC-SHA256 with expiry).
-  - Idempotent execution preventing duplicate reminder deliveries.
-  - Console/Mock SMTP email provider.
+- **Await User Approval** to commence **Phase 5: ML Models & Evaluation Pipeline**:
+  - `ml/train_no_show.py`: Train Gradient Boosting / Logistic Regression model for no-show risk prediction using synthetic outpatient history.
+  - `ml/train_wait_time.py`: Train delay prediction model for consultations.
+  - Replace Phase 3 heuristic stub hook with the trained ML no-show risk model.
+  - Build evaluation script (`ml/evaluate.py`) computing ROC-AUC, Precision, Recall, and Confusion Matrix.
+  - Pytest verification for model inference, feature extraction, and prediction endpoints.

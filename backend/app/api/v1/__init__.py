@@ -6,6 +6,9 @@ from app.api.v1.patients import router as patients_router
 from app.api.v1.slots import router as slots_router
 from app.api.v1.appointments import router as appointments_router
 from app.api.v1.waitlist import router as waitlist_router
+from app.api.v1.reminders import router as reminders_router
+from app.api.v1.recommendations import router as recommendations_router
+from app.api.v1.queue import router as queue_router
 
 api_router = APIRouter()
 api_router.include_router(auth_router)
@@ -15,3 +18,6 @@ api_router.include_router(patients_router)
 api_router.include_router(slots_router)
 api_router.include_router(appointments_router)
 api_router.include_router(waitlist_router)
+api_router.include_router(reminders_router)
+api_router.include_router(recommendations_router)
+api_router.include_router(queue_router)
