@@ -1,8 +1,11 @@
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import Column, String, Integer, Boolean, DateTime, Text, JSON, ForeignKey, Index
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from app.core.database import Base
+
+JSON_TYPE = JSON().with_variant(JSONB, "postgresql")
 
 def generate_uuid():
     return str(uuid.uuid4())
@@ -21,7 +24,7 @@ class AuditLog(Base):
     hospital_id = Column(String(36), ForeignKey("hospitals.id", ondelete="SET NULL"), nullable=True, index=True)
     ip_address = Column(String(45), nullable=True)
     user_agent = Column(String(255), nullable=True)
-    details = Column(JSON, nullable=True)
+    details = Column(JSON_TYPE, nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)
 
     user = relationship("User", back_populates="audit_logs")
@@ -36,9 +39,9 @@ class AIInteractionLog(Base):
     input_text_anonymized = Column(Text, nullable=False)
     red_flag_triggered = Column(Boolean, default=False, nullable=False)
     urgency_level = Column(String(30), nullable=True)  # 'routine', 'soon', 'emergency'
-    extracted_entities = Column(JSON, nullable=True)
-    tools_called = Column(JSON, nullable=True)
-    raw_response_json = Column(JSON, nullable=True)
+    extracted_entities = Column(JSON_TYPE, nullable=True)
+    tools_called = Column(JSON_TYPE, nullable=True)
+    raw_response_json = Column(JSON_TYPE, nullable=True)
     latency_ms = Column(Integer, nullable=False)
     status = Column(String(30), default="success", nullable=False)  # 'success', 'fallback', 'quota_exceeded', 'error'
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)

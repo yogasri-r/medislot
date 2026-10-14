@@ -13,7 +13,8 @@
 | :---: | :--- | :---: | :---: |
 | **Phase 0** | Architecture, Implementation Plan, Database Schema | **COMPLETED** | 2026-10-14 |
 | **Phase 1** | Auth, Hospital-Scoped RBAC, Doctors, Seed Data | **COMPLETED** | 2026-10-14 |
-| **Phase 2** | Availability, Booking, Concurrency Prevention, Waitlist | **COMPLETED** (Awaiting Phase 3 Approval) | 2026-10-14 |
+| **Phase 2** | Availability, Booking, Concurrency Prevention, Waitlist | **COMPLETED** | 2026-10-14 |
+| **Infra** | Docker Desktop (PostgreSQL 16 + Redis 7), Alembic Migrations, PostgreSQL Validation | **COMPLETED** (Awaiting Phase 3 Approval) | 2026-10-14 |
 | **Phase 3** | Automated Reminders & Notifications | Pending Approval | - |
 | **Phase 4** | Simulator, Queue Estimation, Slot & Doctor Recommendation | Pending | - |
 | **Phase 5** | ML Models (No-Show, Wait Time) & Evaluation Pipeline | Pending | - |
@@ -22,56 +23,46 @@
 
 ---
 
-## Phase 2: Deliverables Completed
+## Deliverables Completed: Infrastructure & PostgreSQL Validation
 
-1. **Dynamic Availability & Slot Generator (`backend/app/services/availability.py`):**
-   - Implemented `generate_slots_for_doctor()` which expands recurring `WeeklyAvailabilityTemplates` into discrete 20-minute bookable slots.
-   - Enforced `DateSpecificException` integration (full-day leaves, holidays, and partial-day blocked hours).
-   - Timezone policy: all slot boundaries stored in UTC (`TIMESTAMPTZ`) and rendered in `Asia/Kolkata` (IST) strings (`slot_start_ist`, `slot_end_ist`) for patient UI.
-   - On-demand slot generation for unseeded future dates in `get_slots_for_doctor()`.
+1. **Docker Compose Orchestration (`docker-compose.yml`):**
+   - Configured `postgres:16-alpine` container (`medislot-postgres`) with healthchecks (`pg_isready`), volume persistence (`postgres_data`), and port mapping (`5432:5432`).
+   - Configured `redis:7-alpine` container (`medislot-redis`) with healthcheck (`redis-cli ping`), volume persistence (`redis_data`), and port mapping (`6379:6379`).
+   - Started and verified running healthy via Docker Desktop.
 
-2. **High-Concurrency Booking Engine (`backend/app/services/booking.py`):**
-   - Transactional slot claiming with `SELECT ... FOR UPDATE` row-locking semantics and process mutex guard.
-   - Hard invariant against double booking: verifies slot status, commits `status = 'booked'`, and catches `IntegrityError`/`OperationalError` translating to `HTTP 409 Conflict`.
-   - Generates human-readable appointment numbers (`MED-YYYYMMDD-XXXX`).
-   - Supports optional telemedicine meeting URL and intake notes.
-   - Comprehensive audit logging (`CREATE_APPOINTMENT`, `RESCHEDULE_APPOINTMENT`, `CANCEL_APPOINTMENT`, `UPDATE_STATUS`).
+2. **Alembic Database Migrations (`backend/alembic/`):**
+   - Initialized Alembic migration environment linked directly to `app.models.Base.metadata` and environment configuration.
+   - Generated initial migration `4cf4ff85f0ed_initial_schema_for_medislot.py` containing all 14 relational tables, foreign key cascades, and compound indexes.
+   - Successfully executed `alembic upgrade head` against PostgreSQL.
 
-3. **Appointment Lifecycle State Machine:**
-   - Enforces clinical outpatient state transitions:
-     - `booked` -> `checked_in` -> `in_consultation` -> `completed`
-     - `booked` / `checked_in` -> `cancelled`, `no_show`
-   - Rejects invalid transitions with `HTTP 400 Bad Request` (e.g. attempting to cancel `completed` consultations or transitioning from `cancelled` to `in_consultation`).
-   - Automatically computes consultation metrics: `check_in_time`, `consultation_start_time`, `consultation_end_time`, and `actual_duration_minutes`.
+3. **Deterministic Seeding on PostgreSQL (`scripts/seed_data.py`):**
+   - Deterministic seed script executed against live PostgreSQL:
+     - 1 Super Admin (`admin@medislot.com`).
+     - 4 Western Tamil Nadu Hospitals (Coimbatore, Erode, Tiruppur, Dharapuram) with 4 scoped Hospital Admin accounts.
+     - 10 clinical specialties & departments.
+     - 40 verified doctors with weekly schedule templates (Mon-Fri 09:00 - 13:00).
+     - 500 patients with localized demographics and preferences.
 
-4. **Automated Waitlist & Auto-Offer Engine (`backend/app/services/waitlist.py`):**
-   - Patients can register on the waitlist for fully booked dates/doctors.
-   - When any appointment is cancelled or rescheduled, the freed slot automatically triggers `process_freed_slot_waitlist()`.
-   - Locates the earliest waitlisted patient (FIFO) and issues a time-limited 30-minute booking offer (`status = 'offered'`).
-   - Creates a pending notification record for the patient.
-   - Endpoint `POST /waitlist/{id}/claim` validates the expiration window and seamlessly converts the offer into a confirmed appointment.
+4. **PostgreSQL Compatibility Refinements:**
+   - Installed `psycopg` (psycopg 3 binary) and `psycopg2-binary` along with `redis` client.
+   - Refined `Doctor.languages_spoken`, `AuditLog.details`, and `AIInteractionLog` JSON fields to use `JSON().with_variant(JSONB, "postgresql")` adhering to `docs/DATABASE_SCHEMA.md`. This resolved PostgreSQL's `SELECT DISTINCT` equality operator limitation (`could not identify an equality operator for type json`) when querying doctors with joined eager loading.
 
-5. **FastAPI Endpoints Added (`backend/app/api/v1/`):**
-   - `/slots`: Query available slots for doctor on target date.
-   - `/slots/generate`: Batch slot generation (doctor/admin).
-   - `/slots/exceptions`: Declare doctor leaves / blocked shifts.
-   - `/appointments`: Book new slot (patient).
-   - `/appointments`: List appointments with role-scoped filtering (patient sees own; doctor sees daily; hospital admin sees hospital-scoped).
-   - `/appointments/{id}`: Detailed appointment inspection.
-   - `/appointments/{id}/reschedule`: Move appointment to new slot.
-   - `/appointments/{id}/cancel`: Cancel booking and trigger waitlist.
-   - `/appointments/{id}/status`: Doctor updates consultation state.
-   - `/waitlist`: Join waitlist.
-   - `/waitlist/my`: View active waitlist entries.
-   - `/waitlist/{id}/claim`: Claim offered slot within 30-minute window.
-
-6. **Pytest Verification Suite (`backend/tests/test_booking_concurrency_and_lifecycle.py`):**
-   - **Concurrency Race Test:** 20 concurrent threads simultaneously attempt to book the exact same slot.
-     - **Result:** Exactly 1 thread succeeded (`HTTP 201 Created`), exactly 19 threads failed gracefully (`HTTP 409 Conflict`), and database has exactly 1 appointment for that slot. Zero double bookings!
-   - **Lifecycle State Machine:** Validated complete sequence `booked` -> `checked_in` -> `in_consultation` -> `completed`. Validated rejection of invalid transition `completed` -> `cancelled`.
-   - **Reschedule Flow:** Verified slot swap and old slot liberation.
-   - **Waitlist Auto-Offer:** Verified end-to-end auto-offer and claim flow.
-   - **Total Test Suite:** 13 passed in 5.02s across all suites.
+5. **Pytest Verification Suite on Real PostgreSQL (`backend/tests/`):**
+   - Ran complete test suite against PostgreSQL:
+     - `test_password_hashing_argon2`: PASSED
+     - `test_patient_registration_and_login`: PASSED
+     - `test_cannot_register_super_admin_publicly`: PASSED
+     - `test_refresh_token_flow`: PASSED
+     - `test_hospital_scoped_rbac_isolation`: PASSED
+     - `test_patient_forbidden_from_admin_actions`: PASSED
+     - `test_super_admin_global_access`: PASSED
+     - `test_doctor_search_filters`: PASSED
+     - `test_slot_listing_and_auto_generation`: PASSED
+     - `test_booking_concurrency_race_condition_prevention` (20 concurrent threads against PostgreSQL): PASSED (1 succeeded with 201 Created, 19 gracefully failed with 409 Conflict, exactly 1 appointment booked in PostgreSQL)
+     - `test_appointment_lifecycle_state_machine`: PASSED
+     - `test_reschedule_flow`: PASSED
+     - `test_waitlist_auto_offer_on_cancellation`: PASSED
+   - **Total:** 13 passed in 6.36s.
 
 ---
 
@@ -79,9 +70,17 @@
 
 ```
 D:\medislot\
+├── .env
 ├── .env.example
 ├── .gitignore
+├── docker-compose.yml
 ├── backend\
+│   ├── .env
+│   ├── alembic.ini
+│   ├── alembic\
+│   │   ├── env.py
+│   │   └── versions\
+│   │       └── 4cf4ff85f0ed_initial_schema_for_medislot.py
 │   ├── medislot.db
 │   ├── requirements.txt
 │   ├── app\
@@ -136,19 +135,9 @@ D:\medislot\
 
 ---
 
-## Key Decisions Made in Phase 2
-
-1. **Double-Booking Elimination:** Combined database constraints, row-level locking, and transactional state check. Handled SQLite thread concurrency with an in-process lock to ensure consistent local test behavior while preserving standard SQL `FOR UPDATE` semantics for PostgreSQL.
-2. **Cancelled Slot Reusability:** Configured active booking constraints so that when an appointment is cancelled, the underlying slot can be reassigned to a waitlisted patient without foreign-key collisions.
-3. **Waitlist Auto-Offering:** Configured a 30-minute FIFO claim window that triggers automatically upon appointment cancellation or rescheduling.
-4. **Timezone Awareness:** Normalized database timestamps to UTC and added localized formatting helper for IST display (`Asia/Kolkata`).
-
----
-
 ## Next Steps
 
-- **Await User Approval** for Phase 2 completion.
-- Upon approval, initiate **Phase 3: Automated Reminders and Notifications**:
+- **Await User Approval** to commence **Phase 3: Automated Reminders and Notifications**:
   - APScheduler job engine configuration.
   - 24-hour and 2-hour advance appointment reminders.
   - One-click confirm/cancel signed tokens (HMAC-SHA256 with expiry).

@@ -1,8 +1,11 @@
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import Column, String, Integer, Float, Boolean, DateTime, Text, JSON, ForeignKey, UniqueConstraint, Index
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from app.core.database import Base
+
+JSON_TYPE = JSON().with_variant(JSONB, "postgresql")
 
 def generate_uuid():
     return str(uuid.uuid4())
@@ -20,7 +23,7 @@ class Doctor(Base):
     experience_years = Column(Integer, default=0, nullable=False)
     qualification = Column(String(200), nullable=False)
     bio = Column(Text, nullable=True)
-    languages_spoken = Column(JSON, default=list, nullable=False)  # e.g. ["English", "Tamil"]
+    languages_spoken = Column(JSON_TYPE, default=list, nullable=False)  # e.g. ["English", "Tamil"]
     gender = Column(String(20), nullable=False)  # 'male', 'female', 'other'
     default_consultation_fee = Column(Float, default=500.0, nullable=False)
     is_verified = Column(Boolean, default=False, nullable=False)
