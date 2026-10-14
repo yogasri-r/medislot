@@ -196,3 +196,57 @@ def test_doctor_search_filters():
     hindi_docs = hindi_res.json()
     for d in hindi_docs:
         assert any("hindi" in l.lower() for l in d["languages_spoken"])
+
+def test_hospital_dashboard_stats_and_tenancy():
+    db = SessionLocal()
+    hosp1 = db.query(Hospital).filter(Hospital.city == "Coimbatore").first()
+    hosp2 = db.query(Hospital).filter(Hospital.city != "Coimbatore").first()
+    db.close()
+
+    # Login as Coimbatore Hospital Admin
+    admin_res = client.post("/api/v1/auth/login", json={
+        "email": "admin.coimbatore@medislot.com",
+        "password": "Hospital@123456"
+    })
+    token = admin_res.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Allowed: access own hospital stats
+    res_allowed = client.get(f"/api/v1/hospitals/{hosp1.id}/dashboard-stats", headers=headers)
+    assert res_allowed.status_code == 200
+    data = res_allowed.json()
+    assert "stats" in data
+    assert "departments" in data
+    assert "doctors" in data
+    assert data["stats"]["total_doctors"] >= 1
+
+    # Forbidden: access other hospital stats (403)
+    res_forbidden = client.get(f"/api/v1/hospitals/{hosp2.id}/dashboard-stats", headers=headers)
+    assert res_forbidden.status_code == 403
+
+def test_super_admin_network_analytics():
+    # Super admin login
+    admin_res = client.post("/api/v1/auth/login", json={
+        "email": "admin@medislot.com",
+        "password": "Admin@123456"
+    })
+    token = admin_res.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    res = client.get("/api/v1/hospitals/network-analytics", headers=headers)
+    assert res.status_code == 200
+    data = res.json()
+    assert "network_stats" in data
+    assert data["network_stats"]["total_hospitals"] >= 4
+    assert data["network_stats"]["total_doctors"] >= 40
+    assert len(data["hospitals"]) >= 4
+
+    # Hospital admin forbidden from global network analytics (403)
+    hosp_res = client.post("/api/v1/auth/login", json={
+        "email": "admin.coimbatore@medislot.com",
+        "password": "Hospital@123456"
+    })
+    hosp_token = hosp_res.json()["access_token"]
+    hosp_headers = {"Authorization": f"Bearer {hosp_token}"}
+    res_denied = client.get("/api/v1/hospitals/network-analytics", headers=hosp_headers)
+    assert res_denied.status_code == 403

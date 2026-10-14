@@ -94,35 +94,46 @@ def build_action_urls(token: str) -> Dict[str, str]:
     }
 
 # ---------------------------------------------------------------------------
-# High No-Show Risk Stub Hook (Phase 5 ML Model Integration Hook)
+# ML High No-Show Risk Model Integration
 # ---------------------------------------------------------------------------
 
 def check_high_risk_no_show(appointment: Appointment, db: Session) -> bool:
     """
-    STUB HOOK for ML No-Show Risk Model (to be integrated in Phase 5).
-    Evaluates patient scheduling features:
-    - Lead time in days
-    - Past no-show or cancellation count
-    Returns True if targeted intervention reminder should be scheduled.
+    Production ML No-Show Risk Evaluation:
+    Evaluates appointment features via trained Gradient Boosting model.
+    Flags proactive reminder intervention when probability >= 0.35 (calibrated alert threshold)
+    or when clinical lead time exceeds 14 days.
     """
     slot = appointment.slot
     if not slot:
         return False
 
-    lead_time = (slot.slot_start - utc_now()).total_seconds() / 86400.0
+    lead_time = max(0.0, (slot.slot_start - utc_now()).total_seconds() / 86400.0)
 
-    # Query prior cancellations or no-shows for this patient
+    try:
+        from app.services.ml_service import ml_service
+        from app.schemas.ml import NoShowPredictionRequest
+        if ml_service.is_ready:
+            if appointment.id:
+                req = NoShowPredictionRequest(appointment_id=appointment.id)
+            else:
+                req = NoShowPredictionRequest(
+                    lead_time_days=lead_time,
+                    appointment_type=appointment.appointment_type or "new_patient"
+                )
+            res = ml_service.predict_no_show(req, db=db)
+            return res.is_high_risk or res.no_show_probability >= 0.35 or lead_time > 14.0
+    except Exception as e:
+        print(f"[ReminderService] ML model fallback: {e}")
+
+    # Heuristic fallback
     past_unfulfilled = db.query(Appointment).filter(
         Appointment.patient_id == appointment.patient_id,
         Appointment.id != appointment.id,
         Appointment.status.in_(["cancelled", "no_show"])
     ).count()
 
-    # Rule-based heuristic stub: High risk if prior cancellations >= 2 OR lead time > 14 days
-    if past_unfulfilled >= 2 or lead_time > 14.0:
-        return True
-
-    return False
+    return past_unfulfilled >= 2 or lead_time > 14.0
 
 # ---------------------------------------------------------------------------
 # Scheduling Engine (Called during booking)

@@ -203,7 +203,7 @@ The platform supports both multi-hospital network deployment and single-hospital
 ---
 
 ### Phase 5: Machine Learning Models & Evaluation Pipeline
-- **Objective:** Train, validate, serialize, and serve production ML models for no-show risk prediction and waiting time estimation.
+- **Objective:** Train, validate, serialize, and serve production ML models for no-show risk prediction and waiting time estimation using historical outpatient dataset.
 - **Key Modules:**
   - `ml/train_no_show.py`:
     - Features: `lead_time_days`, `past_no_shows`, `past_appointments`, `appointment_type` (new vs. follow-up), `day_of_week`, `hour_of_day`, `age_group`, `reminder_responded`.
@@ -214,9 +214,25 @@ The platform supports both multi-hospital network deployment and single-hospital
     - Evaluation: Mean Absolute Error (MAE) compared to baseline rule.
   - Model serialization: saved via `joblib` into `backend/app/ml/models/`.
   - Inference service in FastAPI with caching.
-  - Evaluation notebook/script (`evaluation/ml_evaluation.py`) generating the comparative evaluation report.
+  - Integration: Replace Phase 3 heuristic stub hook with trained ML model.
+  - Evaluation script (`ml/evaluate.py`): Offline evaluation computing ROC-AUC, precision, recall, confusion matrix, wait-time MAE.
 - **Testing:**
   - Pytest validating ML model loading, feature transformation, inference schema, and latency (< 20ms).
+
+---
+
+### Phase 5.5: Next.js + TypeScript + Tailwind Frontend Core
+- **Objective:** Build responsive, high-performance web frontend application providing full patient booking and doctor queue management workflows.
+- **Key Modules (`frontend/`):**
+  - **Project Setup:** Next.js 14+ (App Router), TypeScript, Tailwind CSS, Lucide Icons, clean design system.
+  - **Authentication:** Login and Register pages supporting patients and doctors, JWT token storage, protected routes.
+  - **Search & Discovery:** Doctor search with medical specialty, hospital filter, location, language, and gender preferences.
+  - **Doctor Profile & Smart Slot Picker:** Doctor credentials, affiliations, ratings, reviews, and interactive slot picker highlighting Top 3 "Suggested" slot badges with clinical rationales.
+  - **Booking Flow:** Multi-step reservation (appointment type, symptoms, review, confirmation) with concurrency handling.
+  - **My Appointments & Live Queue Tracker:** Patient dashboard displaying upcoming and past appointments, live day-of-appointment queue tracker (queue number, patients ahead, dynamic wait time range).
+  - **Doctor Dashboard:** Doctor daily clinical queue, patient check-in, start/end consultation status controls, and delay alerts.
+- **Testing:**
+  - End-to-end integration verification between Next.js frontend and FastAPI backend.
 
 ---
 

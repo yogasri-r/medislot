@@ -46,6 +46,26 @@ def get_appointment_queue_status(appointment_id: str, db: Session) -> QueueStatu
 
     historical_avg = round(float(avg_duration), 1) if avg_duration else 18.0
 
+    # ML-predicted duration refinement
+    effective_duration = historical_avg
+    try:
+        from app.services.ml_service import ml_service
+        from app.schemas.ml import DurationPredictionRequest
+        if ml_service.is_ready and appt.slot and doctor:
+            slot_dt = appt.slot.slot_start.astimezone(IST_ZONE)
+            req = DurationPredictionRequest(
+                appointment_type=appt.appointment_type or "new_patient",
+                doctor_specialty=doctor.specialty or "General Medicine",
+                day_of_week=slot_dt.weekday(),
+                hour_of_day=slot_dt.hour + (slot_dt.minute / 60.0),
+                patient_age=38.0,
+                doctor_experience_years=doctor.experience_years or 10,
+                estimated_duration_minutes=appt.estimated_duration_minutes or 20
+            )
+            effective_duration = ml_service.predict_duration(req).predicted_duration_minutes
+    except Exception:
+        effective_duration = historical_avg
+
     # Target date in IST
     slot_utc = appt.slot.slot_start if appt.slot else appt.created_at
     slot_ist = slot_utc.astimezone(IST_ZONE)
@@ -114,8 +134,8 @@ def get_appointment_queue_status(appointment_id: str, db: Session) -> QueueStatu
         max_wait = 5
         formatted = "Next in line (0–5 mins)"
     else:
-        min_wait = max(5, int(patients_ahead * (historical_avg - 4) + live_delay))
-        max_wait = max(min_wait + 8, int(patients_ahead * (historical_avg + 4) + live_delay))
+        min_wait = max(5, int(patients_ahead * (effective_duration - 4) + live_delay))
+        max_wait = max(min_wait + 8, int(patients_ahead * (effective_duration + 4) + live_delay))
         formatted = f"{min_wait}–{max_wait} mins"
 
     expected_time = now + timedelta(minutes=(min_wait + max_wait) / 2)

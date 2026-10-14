@@ -4,6 +4,7 @@ import random
 import uuid
 from datetime import datetime, date, time, timezone, timedelta
 import zoneinfo
+from sqlalchemy import text
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend")))
 
@@ -45,29 +46,61 @@ FEEDBACK_COMMENTS_3 = [
     "Consultation was okay, expected more detailed diet explanation."
 ]
 
-def simulate_history(days: int = 180, appointments_per_day: int = 25):
+SPECIALTY_DURATION_OFFSET = {
+    "Cardiology": 3.5,
+    "Orthopedics": 2.5,
+    "Neurology": 3.0,
+    "Pediatrics": 1.0,
+    "General Medicine": -1.5,
+    "Dermatology": -2.5,
+    "ENT": -1.0,
+    "Gynecology": 2.0
+}
+
+def simulate_history(days: int = 180, appointments_per_day: int = 25, force: bool = False):
     """
     Simulates realistic historical appointment records across Western Tamil Nadu hospitals:
-    - Log-normal consultation duration distribution (mean ~ 18 mins, sigma 0.35).
-    - Status distribution: ~70% completed, ~18% no-show, ~12% cancelled.
-    - Realistic arrival offsets, check-in timestamps, and doctor reviews.
+    - Clinically realistic no-show risk conditioned on lead time, patient trait, appointment type, age, and history.
+    - Realistic consultation durations conditioned on appointment type, specialty, and doctor experience.
     """
     db = SessionLocal()
     try:
         random.seed(42)  # Deterministic seed
 
         total_existing_appts = db.query(Appointment).count()
-        if total_existing_appts >= 1500:
-            print(f"Database already has {total_existing_appts} historical appointments. Skipping simulation.")
+        if total_existing_appts >= 1500 and not force:
+            print(f"Database already has {total_existing_appts} historical appointments. Skipping simulation (use --force to re-generate).")
             return
 
-        print(f"Starting historical appointment simulation for past {days} days...")
+        if force:
+            print("Force flag detected. Purging previous simulated historical records...")
+            db.execute(text("DELETE FROM doctor_ratings WHERE id IS NOT NULL;"))
+            db.execute(text("DELETE FROM reminder_jobs WHERE id IS NOT NULL;"))
+            db.execute(text("DELETE FROM notifications WHERE id IS NOT NULL;"))
+            db.execute(text("DELETE FROM appointments WHERE appointment_number LIKE 'MED-%';"))
+            db.execute(text("DELETE FROM slots WHERE status = 'booked' AND slot_start < NOW();"))
+            db.commit()
+            print("Purged old historical appointments and ratings.")
+
+        print(f"Starting clinically calibrated historical appointment simulation for past {days} days...")
 
         doctors = db.query(Doctor).filter(Doctor.is_verified == True).all()
         patients = db.query(Patient).all()
         if not doctors or not patients:
             print("Doctors or patients missing in database. Please run seed_data.py first.")
             return
+
+        # Pre-assign inherent patient adherence tendencies
+        patient_adherence = {}
+        for p in patients:
+            p_rand = random.Random(p.id)
+            # 60% highly adherent, 25% moderate, 15% chronic no-show
+            base_risk = p_rand.choices([0.05, 0.12, 0.22, 0.45], weights=[60, 25, 10, 5])[0]
+            patient_adherence[p.id] = {
+                "base_risk": base_risk,
+                "past_no_shows": 0,
+                "past_total": 0
+            }
 
         today = date.today()
         start_date = today - timedelta(days=days)
@@ -91,7 +124,7 @@ def simulate_history(days: int = 180, appointments_per_day: int = 25):
         # Loop day by day
         curr_date = start_date
         while curr_date < today:
-            # Skip weekends (doctors outpatient shifts are Mon-Fri)
+            # Skip weekends (outpatient clinic shifts are Mon-Fri)
             if curr_date.weekday() >= 5:
                 curr_date += timedelta(days=1)
                 continue
@@ -105,7 +138,6 @@ def simulate_history(days: int = 180, appointments_per_day: int = 25):
                     continue
 
                 # Shift: 09:00 to 13:00 IST (12 slots of 20 mins)
-                # Pick 4 to 8 bookings per doctor per working day
                 num_slots = random.randint(4, 8)
                 available_times = [
                     time(9, 0), time(9, 20), time(9, 40),
@@ -138,22 +170,47 @@ def simulate_history(days: int = 180, appointments_per_day: int = 25):
 
                     # Pick patient
                     patient = random.choice(patients)
+                    p_state = patient_adherence[patient.id]
                     appt_type = "new_patient" if random.random() < 0.60 else "follow_up"
                     est_duration = 25 if appt_type == "new_patient" else 15
 
-                    # Outcome distribution: 70% completed, 18% no-show, 12% cancelled
-                    outcome_rand = random.random()
-                    if outcome_rand < 0.70:
-                        status_val = "completed"
-                    elif outcome_rand < 0.88:
-                        status_val = "no_show"
-                    else:
-                        status_val = "cancelled"
+                    # Lead time in days (1 to 21 days)
+                    lead_time_days = random.randint(1, 21)
+                    booking_created_at = utc_start - timedelta(days=lead_time_days)
 
-                    # Log-normal distribution for consultation duration:
-                    # mu = 2.89 (exp(2.89) ≈ 18 mins), sigma = 0.35
-                    raw_duration = random.lognormvariate(mu=2.89, sigma=0.35)
-                    actual_duration = int(round(max(8, min(45, raw_duration))))
+                    # Causal No-Show Probability:
+                    # 1. Base patient risk trait
+                    prob_no_show = p_state["base_risk"]
+                    # 2. Lead time effect (+1.2% per day of advance booking)
+                    prob_no_show += 0.012 * min(lead_time_days, 18)
+                    # 3. Appointment type effect (+8% for new patient, -4% for established follow-up)
+                    prob_no_show += (0.08 if appt_type == "new_patient" else -0.04)
+                    # 4. Chronic no-show history effect (+15% if patient previously failed to attend)
+                    if p_state["past_total"] > 0 and (p_state["past_no_shows"] / p_state["past_total"]) > 0.30:
+                        prob_no_show += 0.15
+                    # 5. Clamp to realistic clinical bounds [0.03, 0.88]
+                    prob_no_show = max(0.03, min(0.88, prob_no_show))
+
+                    outcome_rand = random.random()
+                    if outcome_rand < prob_no_show:
+                        status_val = "no_show"
+                        p_state["past_no_shows"] += 1
+                    else:
+                        # Of remaining non-no-shows, ~12% cancel in advance, remainder attend
+                        if random.random() < 0.13:
+                            status_val = "cancelled"
+                        else:
+                            status_val = "completed"
+                    
+                    p_state["past_total"] += 1
+
+                    # Causal Consultation Duration:
+                    # Base: 22 mins for new patients, 14.5 mins for follow-ups
+                    base_dur = 22.0 if appt_type == "new_patient" else 14.5
+                    spec_offset = SPECIALTY_DURATION_OFFSET.get(doc.specialty, 0.0)
+                    exp_offset = -0.12 * min(doc.experience_years, 20)
+                    jitter = random.gauss(0.0, 2.8)
+                    actual_duration = int(round(max(8, min(45, base_dur + spec_offset + exp_offset + jitter))))
 
                     # Compute timestamps
                     if status_val == "completed":
@@ -161,19 +218,18 @@ def simulate_history(days: int = 180, appointments_per_day: int = 25):
                         check_in_offset = random.randint(5, 15)
                         check_in = utc_start - timedelta(minutes=check_in_offset)
                         
-                        # Consultation starts with accumulated delay
+                        # Consultation starts with accumulated clinic delay
                         consult_start = utc_start + timedelta(minutes=accumulated_delay)
                         consult_end = consult_start + timedelta(minutes=actual_duration)
 
                         # Update accumulated delay for next patient in clinic
-                        # If consultation took longer than 20 mins, delay accumulates
                         delta_mins = actual_duration - 20
                         accumulated_delay = max(0, min(60, accumulated_delay + delta_mins))
 
                         actual_wait = max(0, int((consult_start - check_in).total_seconds() / 60.0))
 
                         appt = Appointment(
-                            appointment_number=f"MED-{curr_date.strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}",
+                            appointment_number=f"MED-{curr_date.strftime('%Y%m%d')}-{created_appts:05d}-{uuid.uuid4().hex[:8].upper()}",
                             slot_id=slot.id,
                             doctor_id=doc.id,
                             hospital_id=hosp_id,
@@ -186,7 +242,7 @@ def simulate_history(days: int = 180, appointments_per_day: int = 25):
                             actual_duration_minutes=actual_duration,
                             estimated_duration_minutes=est_duration,
                             estimated_wait_minutes=actual_wait,
-                            created_at=utc_start - timedelta(days=random.randint(1, 14))
+                            created_at=booking_created_at
                         )
                         db.add(appt)
                         db.flush()
@@ -218,7 +274,7 @@ def simulate_history(days: int = 180, appointments_per_day: int = 25):
 
                     elif status_val == "no_show":
                         appt = Appointment(
-                            appointment_number=f"MED-{curr_date.strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}",
+                            appointment_number=f"MED-{curr_date.strftime('%Y%m%d')}-{created_appts:05d}-{uuid.uuid4().hex[:8].upper()}",
                             slot_id=slot.id,
                             doctor_id=doc.id,
                             hospital_id=hosp_id,
@@ -226,14 +282,14 @@ def simulate_history(days: int = 180, appointments_per_day: int = 25):
                             appointment_type=appt_type,
                             status="no_show",
                             estimated_duration_minutes=est_duration,
-                            created_at=utc_start - timedelta(days=random.randint(1, 14))
+                            created_at=booking_created_at
                         )
                         db.add(appt)
                         created_appts += 1
 
                     else:  # cancelled
                         appt = Appointment(
-                            appointment_number=f"MED-{curr_date.strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}",
+                            appointment_number=f"MED-{curr_date.strftime('%Y%m%d')}-{created_appts:05d}-{uuid.uuid4().hex[:8].upper()}",
                             slot_id=slot.id,
                             doctor_id=doc.id,
                             hospital_id=hosp_id,
@@ -242,7 +298,7 @@ def simulate_history(days: int = 180, appointments_per_day: int = 25):
                             status="cancelled",
                             cancellation_reason=random.choice(CANCELLATION_REASONS),
                             estimated_duration_minutes=est_duration,
-                            created_at=utc_start - timedelta(days=random.randint(2, 14))
+                            created_at=booking_created_at
                         )
                         db.add(appt)
                         created_appts += 1
@@ -279,4 +335,5 @@ def simulate_history(days: int = 180, appointments_per_day: int = 25):
         db.close()
 
 if __name__ == "__main__":
-    simulate_history(days=180)
+    force_run = "--force" in sys.argv
+    simulate_history(days=180, force=force_run)

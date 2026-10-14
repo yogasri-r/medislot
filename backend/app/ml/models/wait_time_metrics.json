@@ -1,0 +1,60 @@
+{
+  "model_name": "GradientBoostingRegressor",
+  "trained_at": "2026-10-14T12:00:17.282068+00:00",
+  "train_samples": 6568,
+  "test_samples": 1643,
+  "features": {
+    "numeric": [
+      "day_of_week",
+      "hour_of_day",
+      "patient_age",
+      "doctor_experience_years",
+      "estimated_duration_minutes"
+    ],
+    "categorical": [
+      "appointment_type",
+      "doctor_specialty"
+    ]
+  },
+  "metrics": {
+    "mae_minutes": 2.24,
+    "rmse_minutes": 2.79,
+    "r2_score": 0.6931,
+    "naive_baseline_mae": 3.68,
+    "mae_improvement_percent": 39.3
+  },
+  "top_features": [
+    {
+      "feature": "estimated_duration_minutes",
+      "importance": 0.3331
+    },
+    {
+      "feature": "appointment_type_follow_up",
+      "importance": 0.2309
+    },
+    {
+      "feature": "appointment_type_new_patient",
+      "importance": 0.1983
+    },
+    {
+      "feature": "doctor_specialty_Cardiology",
+      "importance": 0.0448
+    },
+    {
+      "feature": "doctor_specialty_Dermatology",
+      "importance": 0.039
+    },
+    {
+      "feature": "doctor_specialty_General Medicine",
+      "importance": 0.0356
+    },
+    {
+      "feature": "doctor_experience_years",
+      "importance": 0.0238
+    },
+    {
+      "feature": "doctor_specialty_Neurology",
+      "importance": 0.0238
+    }
+  ]
+}
